@@ -41,7 +41,7 @@ agentlog diff a3f8 --patch
 # Rollback all changes from a session
 agentlog rollback a3f8
 
-# Ask questions about your sessions (requires ANTHROPIC_API_KEY)
+# Ask AI questions about your sessions
 agentlog query "which session modified the auth module?"
 ```
 
@@ -95,9 +95,9 @@ Options:
 
 ### `agentlog query "<question>"`
 
-Ask a natural language question about your sessions using Claude. Requires `ANTHROPIC_API_KEY` environment variable.
+Ask a natural language question about your sessions using the built-in AI assistant. No setup or API keys required.
 
-Only session metadata (file paths, event types, commands, timestamps) is sent to the API — never file contents.
+Only session metadata (file paths, event types, commands, timestamps) is sent — never file contents.
 
 ## Configuration
 

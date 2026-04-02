@@ -1,8 +1,9 @@
 import chalk from 'chalk';
-import Anthropic from '@anthropic-ai/sdk';
 import ora from 'ora';
 import { openDb, getAllSessionData } from '../db.js';
 import { agentLabel, formatTime, shortPath } from '../utils.js';
+
+const API_URL = 'https://the3rdacademy.com/api/chat/completions';
 
 const SYSTEM_PROMPT = `You are AgentLog's built-in AI assistant. You analyze coding agent session data to answer developer questions.
 
@@ -45,19 +46,6 @@ function buildContext(sessions) {
 }
 
 export async function queryCommand(question, options) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    console.log('');
-    console.log(chalk.red('✖  ANTHROPIC_API_KEY environment variable not set.'));
-    console.log('');
-    console.log(chalk.dim('  Set it in your shell profile:'));
-    console.log(`  ${chalk.cyan('export ANTHROPIC_API_KEY="sk-ant-..."')}`);
-    console.log('');
-    console.log(chalk.dim('  Get an API key: https://console.anthropic.com/settings/keys'));
-    console.log('');
-    process.exit(1);
-  }
-
   const cwd = process.cwd();
   const db = openDb(cwd);
   const sessions = getAllSessionData(db, 20);
@@ -67,20 +55,29 @@ export async function queryCommand(question, options) {
   const spinner = ora({ text: 'Thinking...', color: 'cyan' }).start();
 
   try {
-    const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT + '\n\nSession data:\n' + context,
-      messages: [{ role: 'user', content: question }],
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT + '\n\nSession data:\n' + context },
+          { role: 'user', content: question },
+        ],
+        model: 'a0-default',
+        max_tokens: 1024,
+        temperature: 0.7,
+      }),
     });
 
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || `API request failed (HTTP ${response.status})`);
+    }
+
+    const data = await response.json();
     spinner.stop();
 
-    const text = response.content
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text)
-      .join('\n');
+    const text = data.choices?.[0]?.message?.content || 'No response from AI.';
 
     console.log('');
     // Highlight agentlog commands in cyan

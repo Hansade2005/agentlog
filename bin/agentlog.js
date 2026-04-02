@@ -55,7 +55,7 @@ program
 
 program
   .command('query <question>')
-  .description('Ask a natural language question about your sessions (requires ANTHROPIC_API_KEY)')
+  .description('Ask a natural language question about your sessions')
   .action(queryCommand);
 
 program.parse();
