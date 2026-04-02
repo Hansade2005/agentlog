@@ -45,7 +45,7 @@ async function createTestSession(testDir, extraOpts = []) {
   fs.writeFileSync(path.join(testDir, 'hello.txt'), 'hello world\n', 'utf8');
   fs.writeFileSync(path.join(testDir, 'code.js'), 'const x = 1;\n', 'utf8');
 
-  const child = spawn(NODE, [CLI, 'run', 'custom', ...extraOpts], {
+  const child = spawn(NODE, [CLI, 'run', 'custom', '--foreground', ...extraOpts], {
     cwd: testDir,
     stdio: 'pipe',
     env: process.env,
@@ -267,7 +267,7 @@ describe('agentlog CLI', () => {
     it('should not record .agentlog or node_modules changes', async () => {
       run(['init'], { cwd: testDir });
 
-      const child = spawn(NODE, [CLI, 'run', 'custom'], {
+      const child = spawn(NODE, [CLI, 'run', 'custom', '--foreground'], {
         cwd: testDir, stdio: 'pipe', env: process.env,
       });
 
@@ -305,7 +305,7 @@ describe('agentlog CLI', () => {
     it('should detect and label binary files', async () => {
       run(['init'], { cwd: testDir });
 
-      const child = spawn(NODE, [CLI, 'run', 'custom'], {
+      const child = spawn(NODE, [CLI, 'run', 'custom', '--foreground'], {
         cwd: testDir, stdio: 'pipe', env: process.env,
       });
 

@@ -14,6 +14,7 @@ import { queryCommand } from '../src/commands/query.js';
 import { exportCommand } from '../src/commands/export.js';
 import { statsCommand } from '../src/commands/stats.js';
 import { tagCommand } from '../src/commands/tag.js';
+import { stopCommand } from '../src/commands/stop.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -37,7 +38,13 @@ program
   .option('-a, --args <args>', 'Arguments to pass to the agent CLI')
   .option('-t, --tag <tags...>', 'Tag this session (e.g. --tag bugfix auth)')
   .option('--force', 'Start even if another session is active')
+  .option('--foreground', 'Run watcher in foreground (default for CLI agents)')
   .action(runCommand);
+
+program
+  .command('stop')
+  .description('Stop the background recording session')
+  .action(stopCommand);
 
 program
   .command('sessions')
