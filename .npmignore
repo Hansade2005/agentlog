@@ -1,0 +1,13 @@
+# Development & test files
+tests/
+.agentlog/
+.git/
+.gitignore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

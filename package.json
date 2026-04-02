@@ -6,18 +6,34 @@
   "bin": {
     "agentlog": "./bin/agentlog.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --test tests/",
-    "lint": "echo 'no linter configured'"
+    "prepublishOnly": "node --test tests/"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hansade2005/agentlog.git"
+  },
+  "homepage": "https://github.com/hansade2005/agentlog#readme",
+  "bugs": {
+    "url": "https://github.com/hansade2005/agentlog/issues"
+  },
+  "author": "hansade2005",
   "keywords": [
     "ai",
     "agent",
     "logging",
     "cli",
     "sqlite",
+    "session",
     "cursor",
-    "claude",
+    "claude-code",
     "codex",
     "aider",
     "windsurf",
@@ -25,7 +41,7 @@
     "copilot",
     "rollback",
     "diff",
-    "session"
+    "developer-tools"
   ],
   "license": "MIT",
   "dependencies": {
