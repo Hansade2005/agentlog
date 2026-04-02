@@ -6,7 +6,7 @@ import { createTwoFilesPatch } from 'diff';
 
 export async function exportCommand(sessionId, options) {
   const cwd = process.cwd();
-  const db = openDb(cwd);
+  const db = await openDb(cwd);
 
   const session = resolveSession(db, sessionId);
   if (session.error) {

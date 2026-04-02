@@ -4,7 +4,7 @@ import { agentLabel, formatRelative, formatDuration, formatSize, formatNumber, s
 
 export async function statsCommand(options) {
   const cwd = process.cwd();
-  const db = openDb(cwd);
+  const db = await openDb(cwd);
   const stats = getStats(db);
   db.close();
 

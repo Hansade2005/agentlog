@@ -54,7 +54,7 @@ function buildContext(sessions) {
 
 export async function queryCommand(question, options) {
   const cwd = process.cwd();
-  const db = openDb(cwd);
+  const db = await openDb(cwd);
   const sessions = getAllSessionData(db, 20);
   db.close();
 

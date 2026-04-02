@@ -49,7 +49,7 @@ export async function initCommand() {
     'utf8'
   );
 
-  const db = openDb(cwd);
+  const db = await openDb(cwd);
   db.close();
 
   const projectName = path.basename(cwd);

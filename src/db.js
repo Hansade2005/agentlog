@@ -1,7 +1,68 @@
-import Database from 'better-sqlite3';
+import initSqlJs from 'sql.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+
+let SQL = null;
+
+async function getSqlJs() {
+  if (!SQL) {
+    SQL = await initSqlJs();
+  }
+  return SQL;
+}
+
+// ─── Thin wrapper around sql.js to match better-sqlite3-style API ────
+
+class DatabaseWrapper {
+  constructor(sqlDb, dbPath) {
+    this._db = sqlDb;
+    this._path = dbPath;
+  }
+
+  run(sql, ...params) {
+    this._db.run(sql, params.flat());
+    this._save();
+  }
+
+  exec(sql) {
+    this._db.run(sql);
+    this._save();
+  }
+
+  get(sql, ...params) {
+    const stmt = this._db.prepare(sql);
+    stmt.bind(params.flat());
+    let row = null;
+    if (stmt.step()) {
+      row = stmt.getAsObject();
+    }
+    stmt.free();
+    return row || undefined;
+  }
+
+  all(sql, ...params) {
+    const stmt = this._db.prepare(sql);
+    stmt.bind(params.flat());
+    const rows = [];
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return rows;
+  }
+
+  _save() {
+    const data = this._db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(this._path, buffer);
+  }
+
+  close() {
+    this._save();
+    this._db.close();
+  }
+}
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -42,10 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_started      ON sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_agent        ON sessions(agent);
 `;
 
-// ─── Migrations (additive only) ──────────────────────────────────────
-
 const MIGRATIONS = [
-  // v1.1: add tags, notes, file_size, is_binary columns if missing
   `ALTER TABLE sessions ADD COLUMN tags TEXT DEFAULT ''`,
   `ALTER TABLE sessions ADD COLUMN notes TEXT DEFAULT ''`,
   `ALTER TABLE file_events ADD COLUMN file_size INTEGER DEFAULT 0`,
@@ -57,16 +115,18 @@ function runMigrations(db) {
     try {
       db.exec(sql);
     } catch {
-      // Column/index already exists — ignore
+      // Column already exists — ignore
     }
   }
 }
 
 /**
  * Open (or create) the SQLite database.
- * Prefers project-local .agentlog/sessions.db, falls back to ~/.agentlog/sessions.db.
+ * Now async because sql.js requires WASM initialization.
  */
-export function openDb(cwd) {
+export async function openDb(cwd) {
+  const SqlJs = await getSqlJs();
+
   const localDir = path.join(cwd, '.agentlog');
   let dbPath;
 
@@ -78,44 +138,58 @@ export function openDb(cwd) {
     dbPath = path.join(globalDir, 'sessions.db');
   }
 
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  db.exec(SCHEMA);
-  runMigrations(db);
+  let sqlDb;
+  if (fs.existsSync(dbPath)) {
+    const buffer = fs.readFileSync(dbPath);
+    sqlDb = new SqlJs.Database(buffer);
+  } else {
+    sqlDb = new SqlJs.Database();
+  }
+
+  const db = new DatabaseWrapper(sqlDb, dbPath);
+
+  // Schema + migrations (use raw _db for DDL to avoid excessive saves)
+  for (const stmt of SCHEMA.split(';').filter((s) => s.trim())) {
+    try { sqlDb.run(stmt + ';'); } catch { /* already exists */ }
+  }
+  sqlDb.run('PRAGMA foreign_keys = ON;');
+  for (const sql of MIGRATIONS) {
+    try { sqlDb.run(sql); } catch { /* already exists */ }
+  }
+  // Save after schema setup
+  db._save();
+
   return db;
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────
 
 export function createSession(db, { id, agent, cwd, tags }) {
-  const stmt = db.prepare(
-    `INSERT INTO sessions (id, agent, cwd, started_at, tags) VALUES (?, ?, ?, ?, ?)`
+  db.run(
+    `INSERT INTO sessions (id, agent, cwd, started_at, tags) VALUES (?, ?, ?, ?, ?)`,
+    id, agent, cwd, Date.now(), tags || ''
   );
-  stmt.run(id, agent, cwd, Date.now(), tags || '');
 }
 
 export function endSession(db, id, exitCode) {
-  const stmt = db.prepare(
-    `UPDATE sessions SET ended_at = ?, exit_code = ? WHERE id = ?`
+  db.run(
+    `UPDATE sessions SET ended_at = ?, exit_code = ? WHERE id = ?`,
+    Date.now(), exitCode ?? 0, id
   );
-  stmt.run(Date.now(), exitCode ?? 0, id);
 }
 
 export function updateSessionTags(db, id, tags) {
-  const stmt = db.prepare(`UPDATE sessions SET tags = ? WHERE id = ?`);
-  stmt.run(tags, id);
+  db.run(`UPDATE sessions SET tags = ? WHERE id = ?`, tags, id);
 }
 
 export function updateSessionNotes(db, id, notes) {
-  const stmt = db.prepare(`UPDATE sessions SET notes = ? WHERE id = ?`);
-  stmt.run(notes, id);
+  db.run(`UPDATE sessions SET notes = ? WHERE id = ?`, notes, id);
 }
 
 export function deleteSession(db, id) {
-  db.prepare(`DELETE FROM file_events WHERE session_id = ?`).run(id);
-  db.prepare(`DELETE FROM shell_events WHERE session_id = ?`).run(id);
-  db.prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
+  db.run(`DELETE FROM file_events WHERE session_id = ?`, id);
+  db.run(`DELETE FROM shell_events WHERE session_id = ?`, id);
+  db.run(`DELETE FROM sessions WHERE id = ?`, id);
 }
 
 export function getSessions(db, { limit = 20, agent, tag, since, until } = {}) {
@@ -149,80 +223,73 @@ export function getSessions(db, { limit = 20, agent, tag, since, until } = {}) {
   sql += ` ORDER BY s.started_at DESC LIMIT ?`;
   params.push(limit);
 
-  return db.prepare(sql).all(...params);
+  return db.all(sql, ...params);
 }
 
 export function getSession(db, id) {
-  return db.prepare(`SELECT * FROM sessions WHERE id = ?`).get(id);
+  return db.get(`SELECT * FROM sessions WHERE id = ?`, id);
 }
 
 export function getSessionByShortId(db, shortId) {
-  const rows = db.prepare(`SELECT * FROM sessions WHERE id LIKE ? COLLATE NOCASE`).all(shortId + '%');
+  const rows = db.all(`SELECT * FROM sessions WHERE id LIKE ? COLLATE NOCASE`, shortId + '%');
   if (rows.length === 1) return rows[0];
   if (rows.length > 1) return { ambiguous: true, matches: rows };
   return null;
 }
 
 export function getActiveSession(db, cwd) {
-  return db.prepare(
-    `SELECT * FROM sessions WHERE cwd = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1`
-  ).get(cwd);
+  return db.get(
+    `SELECT * FROM sessions WHERE cwd = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1`,
+    cwd
+  );
 }
 
 // ─── File Events ─────────────────────────────────────────────────────
 
 export function recordFileEvent(db, { sessionId, type, filePath, before, after, fileSize, isBinary }) {
-  const stmt = db.prepare(`
-    INSERT INTO file_events (session_id, event_type, file_path, snapshot_before, snapshot_after, file_size, is_binary, occurred_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  stmt.run(sessionId, type, filePath, before ?? null, after ?? null, fileSize ?? 0, isBinary ? 1 : 0, Date.now());
-}
-
-export function recordFileEventBatch(db, events) {
-  const stmt = db.prepare(`
-    INSERT INTO file_events (session_id, event_type, file_path, snapshot_before, snapshot_after, file_size, is_binary, occurred_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const insertMany = db.transaction((rows) => {
-    for (const e of rows) {
-      stmt.run(e.sessionId, e.type, e.filePath, e.before ?? null, e.after ?? null, e.fileSize ?? 0, e.isBinary ? 1 : 0, Date.now());
-    }
-  });
-  insertMany(events);
+  db.run(
+    `INSERT INTO file_events (session_id, event_type, file_path, snapshot_before, snapshot_after, file_size, is_binary, occurred_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    sessionId, type, filePath, before ?? null, after ?? null, fileSize ?? 0, isBinary ? 1 : 0, Date.now()
+  );
 }
 
 export function getFileEvents(db, sessionId) {
-  return db.prepare(
-    `SELECT * FROM file_events WHERE session_id = ? ORDER BY occurred_at ASC`
-  ).all(sessionId);
+  return db.all(
+    `SELECT * FROM file_events WHERE session_id = ? ORDER BY occurred_at ASC`,
+    sessionId
+  );
 }
 
 // ─── Shell Events ────────────────────────────────────────────────────
 
 export function recordShellEvent(db, { sessionId, command, cwd }) {
-  db.prepare(
-    `INSERT INTO shell_events (session_id, command, cwd, occurred_at) VALUES (?, ?, ?, ?)`
-  ).run(sessionId, command, cwd, Date.now());
+  db.run(
+    `INSERT INTO shell_events (session_id, command, cwd, occurred_at) VALUES (?, ?, ?, ?)`,
+    sessionId, command, cwd, Date.now()
+  );
 }
 
 export function getShellEvents(db, sessionId) {
-  return db.prepare(
-    `SELECT * FROM shell_events WHERE session_id = ? ORDER BY occurred_at ASC`
-  ).all(sessionId);
+  return db.all(
+    `SELECT * FROM shell_events WHERE session_id = ? ORDER BY occurred_at ASC`,
+    sessionId
+  );
 }
 
-// ─── Aggregated query (for AI query + export) ────────────────────────
+// ─── Aggregated query ────────────────────────────────────────────────
 
 export function getAllSessionData(db, limit = 20) {
   const sessions = getSessions(db, { limit });
   return sessions.map((s) => {
-    const files = db.prepare(
-      `SELECT event_type, file_path, file_size, is_binary, occurred_at FROM file_events WHERE session_id = ? ORDER BY occurred_at ASC`
-    ).all(s.id);
-    const commands = db.prepare(
-      `SELECT command, cwd, occurred_at FROM shell_events WHERE session_id = ? ORDER BY occurred_at ASC`
-    ).all(s.id);
+    const files = db.all(
+      `SELECT event_type, file_path, file_size, is_binary, occurred_at FROM file_events WHERE session_id = ? ORDER BY occurred_at ASC`,
+      s.id
+    );
+    const commands = db.all(
+      `SELECT command, cwd, occurred_at FROM shell_events WHERE session_id = ? ORDER BY occurred_at ASC`,
+      s.id
+    );
     return { ...s, files, commands };
   });
 }
@@ -230,23 +297,23 @@ export function getAllSessionData(db, limit = 20) {
 // ─── Stats ───────────────────────────────────────────────────────────
 
 export function getStats(db) {
-  const totalSessions = db.prepare(`SELECT COUNT(*) AS count FROM sessions`).get().count;
-  const totalFileEvents = db.prepare(`SELECT COUNT(*) AS count FROM file_events`).get().count;
-  const totalShellEvents = db.prepare(`SELECT COUNT(*) AS count FROM shell_events`).get().count;
-  const agents = db.prepare(`SELECT agent, COUNT(*) AS count FROM sessions GROUP BY agent ORDER BY count DESC`).all();
-  const topFiles = db.prepare(
+  const totalSessions = db.get(`SELECT COUNT(*) AS count FROM sessions`).count;
+  const totalFileEvents = db.get(`SELECT COUNT(*) AS count FROM file_events`).count;
+  const totalShellEvents = db.get(`SELECT COUNT(*) AS count FROM shell_events`).count;
+  const agents = db.all(`SELECT agent, COUNT(*) AS count FROM sessions GROUP BY agent ORDER BY count DESC`);
+  const topFiles = db.all(
     `SELECT file_path, COUNT(*) AS count FROM file_events GROUP BY file_path ORDER BY count DESC LIMIT 10`
-  ).all();
-  const firstSession = db.prepare(`SELECT MIN(started_at) AS ts FROM sessions`).get();
-  const lastSession = db.prepare(`SELECT MAX(started_at) AS ts FROM sessions`).get();
-  const avgDuration = db.prepare(
+  );
+  const firstSession = db.get(`SELECT MIN(started_at) AS ts FROM sessions`);
+  const lastSession = db.get(`SELECT MAX(started_at) AS ts FROM sessions`);
+  const avgDuration = db.get(
     `SELECT AVG(ended_at - started_at) AS avg FROM sessions WHERE ended_at IS NOT NULL`
-  ).get();
-  const totalSize = db.prepare(`SELECT SUM(file_size) AS total FROM file_events`).get();
-  const binaryCount = db.prepare(`SELECT COUNT(*) AS count FROM file_events WHERE is_binary = 1`).get().count;
-  const eventsByType = db.prepare(
+  );
+  const totalSize = db.get(`SELECT SUM(file_size) AS total FROM file_events`);
+  const binaryCount = db.get(`SELECT COUNT(*) AS count FROM file_events WHERE is_binary = 1`).count;
+  const eventsByType = db.all(
     `SELECT event_type, COUNT(*) AS count FROM file_events GROUP BY event_type ORDER BY count DESC`
-  ).all();
+  );
 
   return {
     totalSessions,
@@ -266,18 +333,10 @@ export function getStats(db) {
 // ─── Pruning ─────────────────────────────────────────────────────────
 
 export function pruneSessions(db, keepCount) {
-  const excess = db.prepare(`
-    SELECT id FROM sessions ORDER BY started_at DESC LIMIT -1 OFFSET ?
-  `).all(keepCount);
-
-  if (excess.length === 0) return 0;
-
-  const del = db.transaction((ids) => {
-    for (const { id } of ids) {
-      deleteSession(db, id);
-    }
-  });
-  del(excess);
+  const excess = db.all(`SELECT id FROM sessions ORDER BY started_at DESC LIMIT -1 OFFSET ?`, keepCount);
+  for (const { id } of excess) {
+    deleteSession(db, id);
+  }
   return excess.length;
 }
 

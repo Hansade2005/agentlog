@@ -4,7 +4,7 @@ import { formatRelative, formatDuration, agentLabel, pad, truncate } from '../ut
 
 export async function sessionsCommand(options) {
   const cwd = process.cwd();
-  const db = openDb(cwd);
+  const db = await openDb(cwd);
 
   const limit = parseInt(options.limit, 10);
   const filters = {

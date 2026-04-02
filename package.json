@@ -1,6 +1,6 @@
 {
   "name": "@pipilot-dev/agentlog",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Record, query, diff, and rollback AI coding agent sessions — locally, with SQLite.",
   "type": "module",
   "bin": {
@@ -45,12 +45,12 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
     "chalk": "^5.4.1",
     "chokidar": "^4.0.3",
     "commander": "^13.1.0",
     "diff": "^7.0.0",
-    "ora": "^8.2.0"
+    "ora": "^8.2.0",
+    "sql.js": "^1.14.1"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -85,7 +85,7 @@ export async function runCommand(agent, options) {
     process.exit(1);
   }
 
-  const db = openDb(cwd);
+  const db = await openDb(cwd);
 
   // Concurrent session protection
   const activeSession = getActiveSession(db, cwd);

@@ -3,7 +3,7 @@ import { openDb, resolveSession, updateSessionTags, updateSessionNotes } from '.
 
 export async function tagCommand(sessionId, options) {
   const cwd = process.cwd();
-  const db = openDb(cwd);
+  const db = await openDb(cwd);
 
   const session = resolveSession(db, sessionId);
   if (session.error) {

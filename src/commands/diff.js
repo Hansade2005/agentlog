@@ -19,7 +19,7 @@ function renderDiff(before, after, filePath) {
 
 export async function diffCommand(sessionId, options) {
   const cwd = process.cwd();
-  const db = openDb(cwd);
+  const db = await openDb(cwd);
 
   if (options.compare) {
     return compareSessions(db, sessionId, options.compare, cwd);
