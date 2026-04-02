@@ -34,8 +34,10 @@ export async function initCommand() {
   const agentlogDir = path.join(cwd, '.agentlog');
 
   if (fs.existsSync(agentlogDir)) {
-    console.log(chalk.yellow('  .agentlog/ already exists in this directory.'));
-    console.log(chalk.dim(`  Run ${chalk.cyan('agentlog sessions')} to see recorded sessions.`));
+    console.log('');
+    console.log(chalk.yellow('  ⚠  .agentlog/ already exists in this directory.'));
+    console.log(chalk.dim(`     Run ${chalk.cyan('agentlog sessions')} to see recorded sessions.`));
+    console.log('');
     process.exit(1);
   }
 
@@ -50,13 +52,17 @@ export async function initCommand() {
   const db = openDb(cwd);
   db.close();
 
+  const projectName = path.basename(cwd);
   console.log('');
-  console.log(chalk.green('  AgentLog initialized in .agentlog/'));
+  console.log(chalk.green('  ✔  AgentLog initialized'));
+  console.log(chalk.dim(`     ${cwd}`));
   console.log('');
-  console.log(chalk.dim('  Next steps:'));
-  console.log(`  ${chalk.cyan('agentlog run cursor')}          Record a Cursor session`);
-  console.log(`  ${chalk.cyan('agentlog run claude-code')}     Wrap a Claude Code session`);
-  console.log(`  ${chalk.cyan('agentlog run custom')}          Watch filesystem for any tool`);
-  console.log(`  ${chalk.cyan('agentlog sessions')}            List recorded sessions`);
+  console.log(chalk.dim('  ┌─────────────────────────────────────────────────────┐'));
+  console.log(chalk.dim('  │') + '  Get started:                                        ' + chalk.dim('│'));
+  console.log(chalk.dim('  │') + `  ${chalk.cyan('agentlog run cursor')}          Record a Cursor session ` + chalk.dim('│'));
+  console.log(chalk.dim('  │') + `  ${chalk.cyan('agentlog run claude-code')}     Wrap Claude Code        ` + chalk.dim('│'));
+  console.log(chalk.dim('  │') + `  ${chalk.cyan('agentlog run custom')}          Watch any tool           ` + chalk.dim('│'));
+  console.log(chalk.dim('  │') + `  ${chalk.cyan('agentlog sessions')}            List sessions            ` + chalk.dim('│'));
+  console.log(chalk.dim('  └─────────────────────────────────────────────────────┘'));
   console.log('');
 }

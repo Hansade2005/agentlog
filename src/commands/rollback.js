@@ -62,24 +62,26 @@ export async function rollbackCommand(sessionId, options) {
   }
 
   console.log('');
-  console.log(
-    chalk.bold(`Rollback session ${session.id}`) +
-    chalk.dim(` — ${agentLabel(session.agent)} — ${formatTime(session.started_at)}`)
-  );
+  console.log(chalk.bold.cyan('  ROLLBACK'));
+  console.log(chalk.dim('  ' + '─'.repeat(50)));
+  console.log('');
+  console.log(`  ${chalk.bold(session.id)}  ${chalk.dim('·')}  ${agentLabel(session.agent)}  ${chalk.dim('·')}  ${formatTime(session.started_at)}`);
   console.log('');
 
   const actionable = actions.filter((a) => a.type !== 'skip');
   const skipped = actions.filter((a) => a.type === 'skip');
 
+  console.log(chalk.bold('  Planned Actions'));
+  console.log('');
   for (const a of actionable) {
     if (a.type === 'delete') {
-      console.log(`  ${chalk.red('delete')}   ${a.rel}`);
+      console.log(`  ${chalk.red('✕')}  ${chalk.red('delete')}   ${a.rel}`);
     } else {
-      console.log(`  ${chalk.green('restore')}  ${a.rel}`);
+      console.log(`  ${chalk.green('↺')}  ${chalk.green('restore')}  ${a.rel}`);
     }
   }
   for (const a of skipped) {
-    console.log(`  ${chalk.dim('skip')}     ${a.rel}  ${chalk.dim(`(${a.reason})`)}`);
+    console.log(`  ${chalk.dim('·')}  ${chalk.dim('skip')}     ${a.rel}  ${chalk.dim(`(${a.reason})`)}`);
   }
 
   if (actionable.length === 0) {

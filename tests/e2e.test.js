@@ -224,7 +224,7 @@ describe('agentlog CLI', () => {
     it('should show analytics', async () => {
       await createTestSession(testDir);
       const out = run(['stats'], { cwd: testDir });
-      assert.ok(out.includes('Analytics'));
+      assert.ok(out.toUpperCase().includes('ANALYTICS'));
       assert.ok(out.includes('Sessions'));
       assert.ok(out.includes('File events'));
       assert.ok(out.includes('Custom'));

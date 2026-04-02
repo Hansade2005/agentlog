@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { openDb, getSessions } from '../db.js';
-import { formatRelative, formatDuration, agentLabel, pad } from '../utils.js';
+import { formatRelative, formatDuration, agentLabel, pad, truncate } from '../utils.js';
 
 export async function sessionsCommand(options) {
   const cwd = process.cwd();
@@ -25,55 +25,67 @@ export async function sessionsCommand(options) {
   }
 
   console.log('');
+  console.log(chalk.bold.cyan('  SESSIONS'));
+  console.log('');
 
+  // Table header
   const header = [
-    pad('', 2),
+    '  ',
     pad('ID', 14),
     pad('Agent', 14),
     pad('Started', 14),
-    pad('Duration', 12),
+    pad('Duration', 11),
     pad('Files', 7),
     pad('Cmds', 6),
     'Tags',
   ].join('');
-  console.log(chalk.bold(header));
-  console.log(chalk.dim('─'.repeat(75)));
+  console.log(chalk.dim(header));
+  console.log(chalk.dim('  ' + '─'.repeat(73)));
 
   for (const s of sessions) {
     const isActive = s.ended_at == null;
     const isError = s.exit_code != null && s.exit_code !== 0;
-    const dot = isActive
-      ? chalk.yellow('●')
-      : isError
-        ? chalk.red('●')
-        : chalk.green('●');
+
+    // Status indicator
+    let dot, statusColor;
+    if (isActive) {
+      dot = chalk.yellow('◉');
+      statusColor = chalk.yellow;
+    } else if (isError) {
+      dot = chalk.red('●');
+      statusColor = chalk.red;
+    } else {
+      dot = chalk.green('●');
+      statusColor = chalk.white;
+    }
 
     const duration = isActive
       ? chalk.yellow('live')
       : formatDuration(s.ended_at - s.started_at);
 
-    const tags = s.tags ? chalk.dim(s.tags) : '';
+    const tags = s.tags
+      ? s.tags.split(',').map((t) => chalk.magenta(`#${t}`)).join(' ')
+      : '';
 
     const line = [
-      dot + ' ',
+      '  ' + dot + ' ',
       pad(chalk.bold(s.id), 14),
       pad(agentLabel(s.agent), 14),
       pad(formatRelative(s.started_at), 14),
-      pad(String(duration), 12),
+      pad(String(duration), 11),
       pad(String(s.file_count), 7),
       pad(String(s.shell_count), 6),
       tags,
     ].join('');
     console.log(line);
 
-    // Show notes if present
+    // Show notes if present (indented under the row)
     if (s.notes) {
-      console.log(chalk.dim(`     ${s.notes}`));
+      console.log(chalk.dim(`      ╰─ ${truncate(s.notes, 65)}`));
     }
   }
 
   console.log('');
-  console.log(chalk.dim(`  ${sessions.length} session(s) shown.`));
-  console.log(chalk.dim(`  ${chalk.cyan('agentlog diff <id>')} to see changes  |  ${chalk.cyan('agentlog stats')} for analytics`));
+  console.log(chalk.dim(`  ${sessions.length} session(s)  ·  ${chalk.cyan('agentlog diff <id>')}  ·  ${chalk.cyan('agentlog stats')}`));
   console.log('');
 }
