@@ -2,7 +2,7 @@
 
 Record, query, diff, and rollback AI coding agent sessions — locally, with SQLite.
 
-AgentLog wraps any AI coding agent session and records every file change and shell command into a local SQLite database. Review what an agent did, compare before/after states, and roll back any session to its original state in seconds.
+AgentLog wraps any AI coding agent session and records every file change and shell command into a local SQLite database. Review what an agent did, compare sessions, export reports, and roll back any session to its original state in seconds.
 
 Works with **Cursor**, **Claude Code**, **Codex**, **Windsurf**, **GitHub Copilot**, **Cline**, **Aider**, and any custom tool.
 
@@ -16,7 +16,7 @@ No cloud. No accounts. Everything stays on your machine.
 npm install -g agentlog
 ```
 
-Requires **Node.js 18+**. Verify the install:
+Requires **Node.js 18+**. Verify:
 
 ```bash
 agentlog --version
@@ -28,16 +28,18 @@ agentlog --version
 
 ```bash
 cd my-project
-agentlog init                  # initialize tracking
-agentlog run cursor            # start recording
-# ... use your agent ...
-# Ctrl+C to stop
+agentlog init                          # initialize tracking
+agentlog run cursor --tag feature      # start recording with tags
+# ... use your agent, Ctrl+C to stop ...
 
-agentlog sessions              # list all sessions
-agentlog diff a3f8             # view what changed
-agentlog diff a3f8 --patch     # full unified diff
-agentlog rollback a3f8         # undo everything
-agentlog query "what changed?" # ask AI about your sessions
+agentlog sessions                      # list all sessions
+agentlog diff a3f8                     # view what changed
+agentlog diff a3f8 --patch             # full unified diffs
+agentlog rollback a3f8                 # undo everything
+agentlog tag a3f8 --note "auth fix"    # annotate sessions
+agentlog stats                         # analytics dashboard
+agentlog export a3f8 --format md       # export to markdown
+agentlog query "what changed?"         # ask AI about sessions
 ```
 
 ---
@@ -46,31 +48,17 @@ agentlog query "what changed?" # ask AI about your sessions
 
 ### Cursor
 
-Cursor is a GUI editor — AgentLog watches your project filesystem while you work.
-
 ```bash
-cd my-project
-agentlog init
 agentlog run cursor
+# Open the same project in Cursor — all agent changes are tracked
+# Ctrl+C to stop
 ```
-
-Open the same project in Cursor. Every file Cursor's agent creates, modifies, or deletes is recorded. Press **Ctrl+C** in the terminal when you're done.
 
 ### Claude Code
 
-Claude Code has a CLI (`claude`) — AgentLog wraps it as a child process so both the filesystem changes and the spawned command are recorded.
-
 ```bash
-cd my-project
-agentlog init
 agentlog run claude-code
-```
-
-This spawns `claude` directly. The session ends when Claude Code exits.
-
-Pass extra arguments:
-
-```bash
+# Spawns the `claude` CLI — session ends when Claude exits
 agentlog run claude-code --args "--model opus"
 ```
 
@@ -80,43 +68,18 @@ agentlog run claude-code --args "--model opus"
 agentlog run codex
 ```
 
-Spawns the `codex` CLI. All changes are tracked automatically.
-
 ### Aider
-
-```bash
-agentlog run aider
-```
-
-Spawns `aider`. Pass arguments with `--args`:
 
 ```bash
 agentlog run aider --args "--model gpt-4"
 ```
 
-### Windsurf
+### Windsurf / Copilot / Cline
 
 ```bash
-agentlog run windsurf
+agentlog run windsurf    # or copilot, cline
+# Filesystem watch mode — open your IDE separately, Ctrl+C to stop
 ```
-
-Filesystem watch mode. Open Windsurf separately and work normally. Press **Ctrl+C** to stop.
-
-### GitHub Copilot (in VS Code)
-
-```bash
-agentlog run copilot
-```
-
-Filesystem watch mode. Open VS Code and use Copilot as usual. Press **Ctrl+C** to stop.
-
-### Cline (VS Code Extension)
-
-```bash
-agentlog run cline
-```
-
-Filesystem watch mode. Open VS Code with Cline installed. Press **Ctrl+C** to stop.
 
 ### Any Other Tool
 
@@ -124,141 +87,116 @@ Filesystem watch mode. Open VS Code with Cline installed. Press **Ctrl+C** to st
 agentlog run custom
 ```
 
-Generic filesystem watcher. Works with any tool that modifies files in your project.
-
 ---
 
 ## Commands
 
 ### `agentlog init`
 
-Initialize AgentLog in the current directory. Creates a `.agentlog/` folder containing the SQLite database, config, and a gitignore.
-
-Run this once per project.
+Initialize AgentLog in the current directory. Run once per project.
 
 ### `agentlog run <agent>`
 
-Start recording a session.
+Start recording. Supports: `cursor`, `claude-code`, `codex`, `aider`, `windsurf`, `copilot`, `cline`, `custom`.
 
-| Agent | How it works |
+| Option | Description |
 |---|---|
-| `cursor` | Watches filesystem (open Cursor separately) |
-| `claude-code` | Spawns `claude` CLI directly |
-| `codex` | Spawns `codex` CLI directly |
-| `aider` | Spawns `aider` CLI directly |
-| `windsurf` | Watches filesystem (open Windsurf separately) |
-| `copilot` | Watches filesystem (open VS Code separately) |
-| `cline` | Watches filesystem (open VS Code separately) |
-| `custom` | Watches filesystem (use any tool) |
+| `-a, --args <args>` | Arguments to pass to CLI agents |
+| `-t, --tag <tags...>` | Tag the session (e.g. `--tag bugfix auth`) |
+| `--force` | Start even if another session is active |
 
-**Options:**
-- `-a, --args <args>` — arguments to pass to the agent CLI (for `claude-code`, `codex`, `aider`)
+**Live activity**: File changes are logged to the terminal in real-time. Binary files are detected automatically and labeled (not snapshotted). Files over 5 MB are skipped.
 
 ### `agentlog sessions` (alias: `agentlog ls`)
 
-List all recorded sessions with status, duration, file counts, and command counts.
+List recorded sessions with status, duration, file counts, tags, and notes.
 
-```
-ID        Agent         Started       Duration    Files  Cmds
-───────────────────────────────────────────────────────────────
-● a3f8b2c1 Cursor        2h ago        14m 32s     12     0
-● 7e91d4f0 Claude Code   yesterday     8m 15s      6      3
-```
-
-**Options:**
-- `-l, --limit <n>` — number of sessions to show (default: 20)
+| Option | Description |
+|---|---|
+| `-l, --limit <n>` | Number of sessions (default: 20) |
+| `-a, --agent <agent>` | Filter by agent type |
+| `-t, --tag <tag>` | Filter by tag |
 
 ### `agentlog diff <session-id>`
 
-Show what files were added, modified, or deleted during a session.
+Show file changes. Supports prefix matching (`agentlog diff a3f8`).
 
-Supports **prefix matching** — you don't need the full 8-character ID:
-
-```bash
-agentlog diff a3f8          # matches a3f8b2c1
-agentlog diff a3f8 --patch  # show full unified diffs
-```
-
-**Options:**
-- `-p, --patch` — show full unified diff output for each file
+| Option | Description |
+|---|---|
+| `-p, --patch` | Full unified diff output |
+| `-c, --compare <id>` | Compare with another session |
 
 ### `agentlog rollback <session-id>`
 
-Restore every file to its pre-session state. Files the agent created are deleted. Files the agent modified or deleted are restored.
+Restore files to pre-session state. Previews actions before executing.
 
-```bash
-agentlog rollback a3f8
-```
+| Option | Description |
+|---|---|
+| `-y, --yes` | Skip confirmation |
 
-Previews all actions before executing. Confirm with `y` or skip the prompt:
+### `agentlog export <session-id>`
 
-```bash
-agentlog rollback a3f8 --yes
-```
+Export session data in multiple formats.
 
-**Options:**
-- `-y, --yes` — skip confirmation prompt
+| Option | Description |
+|---|---|
+| `-f, --format <fmt>` | `json`, `md`, or `patch` (default: json) |
+| `-o, --output <file>` | Write to file instead of stdout |
+
+### `agentlog stats`
+
+Analytics dashboard: session counts, event breakdowns, agent distribution, most-changed files, average duration.
+
+### `agentlog tag <session-id>`
+
+Annotate sessions with tags and notes.
+
+| Option | Description |
+|---|---|
+| `--add <tags...>` | Add tags |
+| `--remove <tags...>` | Remove tags |
+| `--note <text>` | Set a note |
 
 ### `agentlog query "<question>"`
 
-Ask a natural language question about your sessions using the built-in AI assistant. No setup or API keys required.
+Ask AI about your sessions. No API keys required.
 
-```bash
-agentlog query "which session touched the auth module?"
-agentlog query "what did I do yesterday?"
-agentlog query "show me sessions that modified more than 5 files"
-```
-
-Only session metadata (file paths, event types, commands, timestamps) is sent — **never file contents**.
+Only metadata (paths, types, timestamps) is sent — **never file contents**.
 
 ---
 
 ## Configuration
 
-Edit `.agentlog/config.json` to customize ignore patterns:
+`.agentlog/config.json`:
 
 ```json
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "ignore": ["node_modules", ".git", "dist", ".next", "build", "__pycache__"],
-  "maxSessionHistory": 100
+  "maxSessionHistory": 100,
+  "maxFileSize": 5242880,
+  "excludeExtensions": [".pyc", ".class", ".o", ".exe", ".dll", ".so"]
 }
 ```
 
-Add entries to `ignore` to exclude directories from tracking. Each entry is matched as a directory name anywhere in the file tree.
+| Key | Description |
+|---|---|
+| `ignore` | Directory names to exclude from watching |
+| `maxSessionHistory` | Auto-prune old sessions beyond this count |
+| `maxFileSize` | Skip snapshotting files larger than this (bytes) |
+| `excludeExtensions` | File extensions to ignore |
 
 ---
 
 ## How It Works
 
-1. **Snapshot** — `agentlog run` indexes all files in your project at session start
-2. **Watch** — A filesystem watcher records every add, change, and delete with before/after content
-3. **Store** — All events go into a local SQLite database (WAL mode for performance)
-4. **Diff** — `agentlog diff` computes unified diffs from the stored snapshots
-5. **Rollback** — `agentlog rollback` uses the *first* recorded snapshot per file to restore pre-session state
-6. **Query** — `agentlog query` sends only metadata (paths, types, timestamps) to the AI for analysis
-
----
-
-## Typical Workflow
-
-```bash
-# Before a risky agent session
-agentlog run cursor
-
-# Agent makes changes...
-# Ctrl+C
-
-# Review what happened
-agentlog diff a3f8 --patch
-
-# Happy with it? Move on.
-# Not happy? Roll it all back.
-agentlog rollback a3f8 --yes
-
-# Later, query across all sessions
-agentlog query "which sessions modified package.json?"
-```
+1. **Snapshot** — indexes all project files at session start
+2. **Watch** — records every add, change, delete with before/after content
+3. **Detect** — binary files identified, large files skipped automatically
+4. **Store** — SQLite with WAL mode, indexed queries, automatic migrations
+5. **Diff** — unified diffs computed from stored snapshots
+6. **Rollback** — first recorded snapshot per file = pre-session truth
+7. **Prune** — old sessions auto-cleaned based on `maxSessionHistory`
 
 ---
 
@@ -266,9 +204,8 @@ agentlog query "which sessions modified package.json?"
 
 ```bash
 npm uninstall -g agentlog
+rm -rf .agentlog/  # remove from a project
 ```
-
-To remove tracking data from a project, delete the `.agentlog/` folder.
 
 ---
 

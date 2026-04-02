@@ -1,6 +1,6 @@
 {
   "name": "agentlog",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Record, query, diff, and rollback AI coding agent sessions — locally, with SQLite.",
   "type": "module",
   "bin": {

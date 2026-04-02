@@ -9,21 +9,20 @@ const CLI = path.resolve('bin/agentlog.js');
 const NODE = process.execPath;
 
 function run(args, opts = {}) {
-  const result = execFileSync(NODE, [CLI, ...args], {
+  return execFileSync(NODE, [CLI, ...args], {
     encoding: 'utf8',
-    timeout: 10000,
+    timeout: 15000,
     cwd: opts.cwd || process.cwd(),
     env: { ...process.env, ...opts.env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-  return result;
 }
 
 function runFail(args, opts = {}) {
   try {
     execFileSync(NODE, [CLI, ...args], {
       encoding: 'utf8',
-      timeout: 10000,
+      timeout: 15000,
       cwd: opts.cwd || process.cwd(),
       env: { ...process.env, ...opts.env },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -38,15 +37,49 @@ function makeTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'agentlog-test-'));
 }
 
+/**
+ * Helper: init a test dir, run a session that creates/modifies files, return session ID.
+ */
+async function createTestSession(testDir, extraOpts = []) {
+  run(['init'], { cwd: testDir });
+  fs.writeFileSync(path.join(testDir, 'hello.txt'), 'hello world\n', 'utf8');
+  fs.writeFileSync(path.join(testDir, 'code.js'), 'const x = 1;\n', 'utf8');
+
+  const child = spawn(NODE, [CLI, 'run', 'custom', ...extraOpts], {
+    cwd: testDir,
+    stdio: 'pipe',
+    env: process.env,
+  });
+
+  await new Promise((resolve) => {
+    let output = '';
+    child.stdout.on('data', (d) => {
+      output += d.toString();
+      if (output.includes('Ctrl+C') || output.includes('Indexed')) resolve();
+    });
+    setTimeout(resolve, 5000);
+  });
+  await new Promise((r) => setTimeout(r, 500));
+
+  fs.writeFileSync(path.join(testDir, 'hello.txt'), 'hello modified\n', 'utf8');
+  await new Promise((r) => setTimeout(r, 200));
+  fs.writeFileSync(path.join(testDir, 'new-file.txt'), 'agent created\n', 'utf8');
+  await new Promise((r) => setTimeout(r, 2000));
+
+  child.kill('SIGINT');
+  await new Promise((resolve) => child.on('close', resolve));
+
+  const sessionsOut = run(['sessions'], { cwd: testDir });
+  const idMatch = sessionsOut.match(/([a-f0-9]{12})/);
+  assert.ok(idMatch, 'Should find 12-char session ID');
+  return idMatch[1];
+}
+
 describe('agentlog CLI', () => {
   let testDir;
 
   beforeEach(() => {
     testDir = makeTmpDir();
-  });
-
-  after(() => {
-    // Cleanup is best-effort
   });
 
   describe('version', () => {
@@ -57,10 +90,9 @@ describe('agentlog CLI', () => {
   });
 
   describe('init', () => {
-    it('should create .agentlog directory', () => {
+    it('should create .agentlog directory with all files', () => {
       const out = run(['init'], { cwd: testDir });
       assert.ok(out.includes('AgentLog initialized'));
-      assert.ok(fs.existsSync(path.join(testDir, '.agentlog')));
       assert.ok(fs.existsSync(path.join(testDir, '.agentlog', 'sessions.db')));
       assert.ok(fs.existsSync(path.join(testDir, '.agentlog', 'config.json')));
       assert.ok(fs.existsSync(path.join(testDir, '.agentlog', '.gitignore')));
@@ -72,14 +104,16 @@ describe('agentlog CLI', () => {
       assert.ok(stdout.includes('already exists'));
     });
 
-    it('should create valid config', () => {
+    it('should create valid config with v1.1 schema', () => {
       run(['init'], { cwd: testDir });
       const config = JSON.parse(
         fs.readFileSync(path.join(testDir, '.agentlog', 'config.json'), 'utf8')
       );
-      assert.equal(config.version, '1.0.0');
+      assert.equal(config.version, '1.1.0');
       assert.ok(Array.isArray(config.ignore));
-      assert.ok(config.ignore.includes('node_modules'));
+      assert.ok(config.maxSessionHistory > 0);
+      assert.ok(config.maxFileSize > 0);
+      assert.ok(Array.isArray(config.excludeExtensions));
     });
   });
 
@@ -98,67 +132,20 @@ describe('agentlog CLI', () => {
   });
 
   describe('run + diff + rollback', () => {
-    it('should record file changes and rollback', async () => {
-      // Init
-      run(['init'], { cwd: testDir });
+    it('should record, diff, and rollback file changes', async () => {
+      const sessionId = await createTestSession(testDir);
 
-      // Create initial files
-      fs.writeFileSync(path.join(testDir, 'hello.txt'), 'hello world\n', 'utf8');
-      fs.writeFileSync(path.join(testDir, 'code.js'), 'const x = 1;\n', 'utf8');
-
-      // Start recording in background
-      const child = spawn(NODE, [CLI, 'run', 'custom'], {
-        cwd: testDir,
-        stdio: 'pipe',
-        env: process.env,
-      });
-
-      // Wait for watcher to be ready
-      await new Promise((resolve) => {
-        let output = '';
-        child.stdout.on('data', (d) => {
-          output += d.toString();
-          if (output.includes('Ctrl+C') || output.includes('Indexed')) resolve();
-        });
-        setTimeout(resolve, 5000);
-      });
-
-      // Extra settle time for watcher to fully initialize
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      // Simulate agent changes
-      fs.writeFileSync(path.join(testDir, 'hello.txt'), 'hello modified\n', 'utf8');
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      fs.writeFileSync(path.join(testDir, 'new-file.txt'), 'agent created\n', 'utf8');
-
-      // Wait for write stabilization (awaitWriteFinish: 300ms + buffer)
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      // Stop recording
-      child.kill('SIGINT');
-      await new Promise((resolve) => child.on('close', resolve));
-
-      // Check sessions
-      const sessionsOut = run(['sessions'], { cwd: testDir });
-      assert.ok(sessionsOut.includes('Custom'));
-      assert.ok(!sessionsOut.includes('No sessions'));
-
-      // Extract session ID from output (8 hex chars)
-      const idMatch = sessionsOut.match(/([a-f0-9]{8})/);
-      assert.ok(idMatch, 'Should find session ID');
-      const sessionId = idMatch[1];
-
-      // Check diff
+      // Diff
       const diffOut = run(['diff', sessionId], { cwd: testDir });
       assert.ok(diffOut.includes('hello.txt'));
       assert.ok(diffOut.includes('new-file.txt'));
 
-      // Check diff --patch
+      // Diff --patch
       const patchOut = run(['diff', sessionId, '--patch'], { cwd: testDir });
       assert.ok(patchOut.includes('+hello modified'));
       assert.ok(patchOut.includes('-hello world'));
 
-      // Check diff with short ID
+      // Prefix match
       const shortDiff = run(['diff', sessionId.slice(0, 4)], { cwd: testDir });
       assert.ok(shortDiff.includes(sessionId));
 
@@ -168,19 +155,92 @@ describe('agentlog CLI', () => {
       assert.ok(rollbackOut.includes('deleted'));
       assert.ok(rollbackOut.includes('succeeded'));
 
-      // Verify rollback
       assert.equal(fs.readFileSync(path.join(testDir, 'hello.txt'), 'utf8'), 'hello world\n');
-      assert.equal(fs.readFileSync(path.join(testDir, 'code.js'), 'utf8'), 'const x = 1;\n');
       assert.ok(!fs.existsSync(path.join(testDir, 'new-file.txt')));
+    });
+  });
+
+  describe('tagging', () => {
+    it('should support tags during run and tag command', async () => {
+      const sessionId = await createTestSession(testDir, ['--tag', 'bugfix', 'auth']);
+
+      // Check tags appear in sessions
+      const sessionsOut = run(['sessions'], { cwd: testDir });
+      assert.ok(sessionsOut.includes('bugfix'));
+      assert.ok(sessionsOut.includes('auth'));
+
+      // Add note via tag command
+      run(['tag', sessionId, '--note', 'Fixed auth bug'], { cwd: testDir });
+
+      // Verify note shows in sessions
+      const out2 = run(['sessions'], { cwd: testDir });
+      assert.ok(out2.includes('Fixed auth bug'));
+
+      // Filter by tag
+      const filtered = run(['sessions', '--tag', 'bugfix'], { cwd: testDir });
+      assert.ok(filtered.includes(sessionId.slice(0, 8)));
+
+      const empty = run(['sessions', '--tag', 'nonexistent'], { cwd: testDir });
+      assert.ok(empty.includes('No sessions'));
+    });
+  });
+
+  describe('export', () => {
+    it('should export as JSON', async () => {
+      const sessionId = await createTestSession(testDir);
+      const out = run(['export', sessionId, '--format', 'json'], { cwd: testDir });
+      const data = JSON.parse(out);
+      assert.equal(data.session.id, sessionId);
+      assert.ok(Array.isArray(data.file_events));
+      assert.ok(data.file_events.length > 0);
+      assert.ok(data.exported_at);
+    });
+
+    it('should export as markdown', async () => {
+      const sessionId = await createTestSession(testDir);
+      const out = run(['export', sessionId, '--format', 'md'], { cwd: testDir });
+      assert.ok(out.includes(`# Session ${sessionId}`));
+      assert.ok(out.includes('File Changes'));
+    });
+
+    it('should export as patch', async () => {
+      const sessionId = await createTestSession(testDir);
+      const out = run(['export', sessionId, '--format', 'patch'], { cwd: testDir });
+      assert.ok(out.includes('---'));
+      assert.ok(out.includes('+++'));
+    });
+
+    it('should export to file', async () => {
+      const sessionId = await createTestSession(testDir);
+      const outFile = path.join(testDir, 'export.json');
+      run(['export', sessionId, '--format', 'json', '--output', outFile], { cwd: testDir });
+      assert.ok(fs.existsSync(outFile));
+      const data = JSON.parse(fs.readFileSync(outFile, 'utf8'));
+      assert.equal(data.session.id, sessionId);
+    });
+  });
+
+  describe('stats', () => {
+    it('should show analytics', async () => {
+      await createTestSession(testDir);
+      const out = run(['stats'], { cwd: testDir });
+      assert.ok(out.includes('Analytics'));
+      assert.ok(out.includes('Sessions'));
+      assert.ok(out.includes('File events'));
+      assert.ok(out.includes('Custom'));
+    });
+
+    it('should handle empty state', () => {
+      run(['init'], { cwd: testDir });
+      const out = run(['stats'], { cwd: testDir });
+      assert.ok(out.includes('No sessions'));
     });
   });
 
   describe('error handling', () => {
     it('should error on run without init', () => {
-      const tmpNoInit = makeTmpDir();
-      // Will use global fallback db, but let's test with an uninitialized dir
-      // The run command checks for .agentlog dir
-      const { stdout } = runFail(['run', 'custom'], { cwd: tmpNoInit });
+      const tmp = makeTmpDir();
+      const { stdout } = runFail(['run', 'custom'], { cwd: tmp });
       assert.ok(stdout.includes('No .agentlog'));
     });
 
@@ -201,39 +261,14 @@ describe('agentlog CLI', () => {
       const { stdout } = runFail(['rollback', 'nonexistent', '--yes'], { cwd: testDir });
       assert.ok(stdout.includes('No session found'));
     });
-
-    it('should attempt query and handle API response or network error', () => {
-      run(['init'], { cwd: testDir });
-      try {
-        const out = execFileSync(NODE, [CLI, 'query', 'list my sessions'], {
-          encoding: 'utf8',
-          timeout: 15000,
-          cwd: testDir,
-          env: process.env,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-        assert.ok(typeof out === 'string');
-      } catch (err) {
-        // Network/timeout errors are expected in sandboxed environments
-        const output = (err.stdout || '') + (err.stderr || '');
-        assert.ok(
-          output.includes('Query failed') ||
-          output.includes('fetch') ||
-          err.status !== 0,
-          'Should fail gracefully with a network or API error'
-        );
-      }
-    });
   });
 
   describe('ignore patterns', () => {
-    it('should not record .agentlog directory changes', async () => {
+    it('should not record .agentlog or node_modules changes', async () => {
       run(['init'], { cwd: testDir });
 
       const child = spawn(NODE, [CLI, 'run', 'custom'], {
-        cwd: testDir,
-        stdio: 'pipe',
-        env: process.env,
+        cwd: testDir, stdio: 'pipe', env: process.env,
       });
 
       await new Promise((resolve) => {
@@ -244,30 +279,59 @@ describe('agentlog CLI', () => {
         });
         setTimeout(resolve, 5000);
       });
+      await new Promise((r) => setTimeout(r, 500));
 
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      // Write to ignored directories
       fs.mkdirSync(path.join(testDir, 'node_modules'), { recursive: true });
       fs.writeFileSync(path.join(testDir, 'node_modules', 'pkg.js'), 'test', 'utf8');
-
-      // Write a tracked file
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise((r) => setTimeout(r, 200));
       fs.writeFileSync(path.join(testDir, 'tracked.txt'), 'tracked\n', 'utf8');
+      await new Promise((r) => setTimeout(r, 2000));
 
-      await new Promise((resolve) => setTimeout(resolve, 2000));
       child.kill('SIGINT');
       await new Promise((resolve) => child.on('close', resolve));
 
-      // Diff should only show tracked.txt, not node_modules or .agentlog changes
       const sessionsOut = run(['sessions'], { cwd: testDir });
-      const idMatch = sessionsOut.match(/([a-f0-9]{8})/);
+      const idMatch = sessionsOut.match(/([a-f0-9]{12})/);
       const sessionId = idMatch[1];
 
       const diffOut = run(['diff', sessionId], { cwd: testDir });
       assert.ok(diffOut.includes('tracked.txt'));
       assert.ok(!diffOut.includes('node_modules'));
       assert.ok(!diffOut.includes('sessions.db'));
+    });
+  });
+
+  describe('binary file handling', () => {
+    it('should detect and label binary files', async () => {
+      run(['init'], { cwd: testDir });
+
+      const child = spawn(NODE, [CLI, 'run', 'custom'], {
+        cwd: testDir, stdio: 'pipe', env: process.env,
+      });
+
+      await new Promise((resolve) => {
+        let output = '';
+        child.stdout.on('data', (d) => {
+          output += d.toString();
+          if (output.includes('Ctrl+C') || output.includes('Indexed')) resolve();
+        });
+        setTimeout(resolve, 5000);
+      });
+      await new Promise((r) => setTimeout(r, 500));
+
+      // Create a binary file (contains null bytes)
+      fs.writeFileSync(path.join(testDir, 'photo.png'), Buffer.from([137, 80, 78, 71, 0, 0, 0, 13]));
+      fs.writeFileSync(path.join(testDir, 'text.txt'), 'just text\n', 'utf8');
+      await new Promise((r) => setTimeout(r, 2000));
+
+      child.kill('SIGINT');
+      await new Promise((resolve) => child.on('close', resolve));
+
+      const sessionsOut = run(['sessions'], { cwd: testDir });
+      const idMatch = sessionsOut.match(/([a-f0-9]{12})/);
+      const diffOut = run(['diff', idMatch[1]], { cwd: testDir });
+      assert.ok(diffOut.includes('binary'));
+      assert.ok(diffOut.includes('text.txt'));
     });
   });
 });

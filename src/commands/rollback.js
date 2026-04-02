@@ -5,15 +5,9 @@ import chalk from 'chalk';
 import { openDb, resolveSession, getFileEvents } from '../db.js';
 import { shortPath, agentLabel, formatTime } from '../utils.js';
 
-/**
- * Prompt the user with a yes/no question.
- */
 function confirm(question) {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     rl.question(question, (answer) => {
       rl.close();
       resolve(answer.toLowerCase().startsWith('y'));
@@ -27,7 +21,7 @@ export async function rollbackCommand(sessionId, options) {
 
   const session = resolveSession(db, sessionId);
   if (session.error) {
-    console.log(chalk.red(`✖  ${session.error}`));
+    console.log(chalk.red(`  ${session.error}`));
     db.close();
     process.exit(1);
   }
@@ -50,30 +44,27 @@ export async function rollbackCommand(sessionId, options) {
     }
   }
 
-  // Determine rollback actions
   const actions = [];
   for (const [filePath, evt] of firstEventByFile) {
     const rel = shortPath(filePath, session.cwd);
 
     if (evt.event_type === 'add') {
-      // Agent created this file → delete it
       actions.push({ type: 'delete', filePath, rel });
     } else if (evt.event_type === 'delete' && evt.snapshot_before != null) {
-      // Agent deleted this file → restore it
       actions.push({ type: 'restore', filePath, rel, content: evt.snapshot_before });
     } else if (evt.event_type === 'change' && evt.snapshot_before != null) {
-      // Agent modified this file → restore to pre-session state
       actions.push({ type: 'restore', filePath, rel, content: evt.snapshot_before });
+    } else if (evt.is_binary) {
+      actions.push({ type: 'skip', filePath, rel, reason: 'binary file — manual restore needed' });
     } else {
       actions.push({ type: 'skip', filePath, rel, reason: 'no pre-session snapshot available' });
     }
   }
 
-  // Print preview
   console.log('');
   console.log(
     chalk.bold(`Rollback session ${session.id}`) +
-      chalk.dim(` — ${agentLabel(session.agent)} — ${formatTime(session.started_at)}`)
+    chalk.dim(` — ${agentLabel(session.agent)} — ${formatTime(session.started_at)}`)
   );
   console.log('');
 
@@ -87,7 +78,6 @@ export async function rollbackCommand(sessionId, options) {
       console.log(`  ${chalk.green('restore')}  ${a.rel}`);
     }
   }
-
   for (const a of skipped) {
     console.log(`  ${chalk.dim('skip')}     ${a.rel}  ${chalk.dim(`(${a.reason})`)}`);
   }
@@ -103,7 +93,6 @@ export async function rollbackCommand(sessionId, options) {
   console.log(chalk.dim(`  ${actionable.length} file(s) will be affected.`));
   console.log('');
 
-  // Confirm
   if (!options.yes) {
     const proceed = await confirm(chalk.yellow('  Proceed with rollback? [y/N] '));
     if (!proceed) {
@@ -112,21 +101,16 @@ export async function rollbackCommand(sessionId, options) {
     }
   }
 
-  // Execute
-  let success = 0;
-  let failed = 0;
+  let success = 0, failed = 0;
 
   for (const a of actionable) {
     try {
       if (a.type === 'delete') {
-        if (fs.existsSync(a.filePath)) {
-          fs.unlinkSync(a.filePath);
-        }
+        if (fs.existsSync(a.filePath)) fs.unlinkSync(a.filePath);
         console.log(`  ${chalk.green('✔')} deleted  ${a.rel}`);
         success++;
       } else if (a.type === 'restore') {
-        const dir = path.dirname(a.filePath);
-        fs.mkdirSync(dir, { recursive: true });
+        fs.mkdirSync(path.dirname(a.filePath), { recursive: true });
         fs.writeFileSync(a.filePath, a.content, 'utf8');
         console.log(`  ${chalk.green('✔')} restored ${a.rel}`);
         success++;
@@ -140,6 +124,7 @@ export async function rollbackCommand(sessionId, options) {
   console.log('');
   const parts = [`${chalk.green(success + ' succeeded')}`];
   if (failed > 0) parts.push(`${chalk.red(failed + ' failed')}`);
+  if (skipped.length > 0) parts.push(`${chalk.dim(skipped.length + ' skipped')}`);
   console.log(`  ${parts.join(', ')}`);
   console.log('');
 }

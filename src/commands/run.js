@@ -3,20 +3,23 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import chalk from 'chalk';
 import chokidar from 'chokidar';
-import { openDb, createSession, endSession, recordFileEvent, recordShellEvent } from '../db.js';
+import ora from 'ora';
 import {
-  generateSessionId,
-  agentLabel,
-  VALID_AGENTS,
-  AGENT_COMMANDS,
-  formatDuration,
+  openDb, createSession, endSession, recordFileEvent, getActiveSession,
+} from '../db.js';
+import {
+  generateSessionId, agentLabel, VALID_AGENTS, AGENT_COMMANDS,
+  formatDuration, isBinaryFile, getFileSize, MAX_SNAPSHOT_SIZE, formatSize,
 } from '../utils.js';
 
 /**
- * Safely read a file, returning null on any error.
+ * Safely read a text file, returning null on error or if binary/too large.
  */
 function safeRead(filePath) {
   try {
+    const size = getFileSize(filePath);
+    if (size < 0 || size > MAX_SNAPSHOT_SIZE) return null;
+    if (isBinaryFile(filePath)) return null;
     return fs.readFileSync(filePath, 'utf8');
   } catch {
     return null;
@@ -28,37 +31,36 @@ function safeRead(filePath) {
  */
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', '.agentlog', 'dist', '.next', 'build',
-  '__pycache__', '.DS_Store', 'Thumbs.db',
+  '__pycache__', '.DS_Store', 'Thumbs.db', '.venv', 'venv',
+  '.tox', 'coverage', '.nyc_output',
 ]);
 
 const IGNORE_EXTENSIONS = new Set(['.pyc', '.db', '.db-shm', '.db-wal']);
 
 /**
- * Build an ignore function for chokidar v4 (glob strings not supported).
+ * Load config and build the chokidar ignore function.
  */
 function buildIgnoreFn(cwd) {
-  // Load extra ignore entries from config
   const extraDirs = new Set();
+  const extraExts = new Set();
   try {
     const configPath = path.join(cwd, '.agentlog', 'config.json');
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     if (Array.isArray(config.ignore)) {
-      for (const entry of config.ignore) {
-        extraDirs.add(entry);
-      }
+      for (const entry of config.ignore) extraDirs.add(entry);
+    }
+    if (Array.isArray(config.excludeExtensions)) {
+      for (const ext of config.excludeExtensions) extraExts.add(ext);
     }
   } catch {
-    // No config or invalid — use defaults only
+    // defaults only
   }
 
   return (filePath) => {
     const basename = path.basename(filePath);
-    // Check directory/file names
     if (IGNORE_DIRS.has(basename) || extraDirs.has(basename)) return true;
-    // Check extensions
     const ext = path.extname(filePath);
-    if (IGNORE_EXTENSIONS.has(ext)) return true;
-    // Check if path contains an ignored segment
+    if (IGNORE_EXTENSIONS.has(ext) || extraExts.has(ext)) return true;
     const segments = filePath.split(path.sep);
     for (const seg of segments) {
       if (IGNORE_DIRS.has(seg) || extraDirs.has(seg)) return true;
@@ -72,30 +74,46 @@ export async function runCommand(agent, options) {
   const agentlogDir = path.join(cwd, '.agentlog');
 
   if (!fs.existsSync(agentlogDir)) {
-    console.log(chalk.red('✖  No .agentlog/ directory found.'));
+    console.log(chalk.red('  No .agentlog/ directory found.'));
     console.log(chalk.dim(`  Run ${chalk.cyan('agentlog init')} first.`));
     process.exit(1);
   }
 
   if (!VALID_AGENTS.includes(agent)) {
-    console.log(chalk.red(`✖  Unknown agent "${agent}".`));
+    console.log(chalk.red(`  Unknown agent "${agent}".`));
     console.log(chalk.dim(`  Valid agents: ${VALID_AGENTS.join(', ')}`));
     process.exit(1);
   }
 
   const db = openDb(cwd);
+
+  // Concurrent session protection
+  const activeSession = getActiveSession(db, cwd);
+  if (activeSession && !options.force) {
+    console.log(chalk.yellow(`  Session ${chalk.bold(activeSession.id)} is already active in this directory.`));
+    console.log(chalk.dim(`  Use ${chalk.cyan('--force')} to start a new session anyway.`));
+    db.close();
+    process.exit(1);
+  }
+
   const sessionId = generateSessionId();
-  createSession(db, { id: sessionId, agent, cwd });
+  const tags = options.tag ? options.tag.join(',') : '';
+  createSession(db, { id: sessionId, agent, cwd, tags });
 
   const ignoreFn = buildIgnoreFn(cwd);
   const preSnapshots = new Map();
+  const sessionStart = Date.now();
+  let fileEventCount = 0;
   let cleaning = false;
 
   console.log('');
-  console.log(chalk.green(`●  Recording session ${chalk.bold(sessionId)} — ${agentLabel(agent)}`));
+  console.log(chalk.green(`  Recording session ${chalk.bold(sessionId)} — ${agentLabel(agent)}`));
+  if (tags) console.log(chalk.dim(`   Tags: ${tags}`));
   console.log(chalk.dim(`   ${cwd}`));
 
   // ── Phase 1: Pre-snapshot pass ──────────────────────────────────
+  const spinner = ora({ text: 'Indexing project files...', color: 'cyan' }).start();
+
   await new Promise((resolve) => {
     const snapshotWatcher = chokidar.watch(cwd, {
       ignored: ignoreFn,
@@ -116,7 +134,7 @@ export async function runCommand(agent, options) {
     });
   });
 
-  console.log(chalk.dim(`   Indexed ${preSnapshots.size} files`));
+  spinner.succeed(`Indexed ${preSnapshots.size} files`);
 
   // ── Phase 2: Main file watcher ──────────────────────────────────
   const watcher = chokidar.watch(cwd, {
@@ -130,41 +148,45 @@ export async function runCommand(agent, options) {
     },
   });
 
+  function logEvent(type, filePath) {
+    fileEventCount++;
+    const rel = filePath.startsWith(cwd) ? filePath.slice(cwd.length + 1) : filePath;
+    const typeColors = { add: chalk.green, change: chalk.yellow, delete: chalk.red };
+    const colorFn = typeColors[type] || chalk.white;
+    const label = { add: '+', change: '~', delete: '-' }[type] || '?';
+    console.log(chalk.dim(`   ${colorFn(label)} ${rel}`));
+  }
+
   watcher.on('add', (filePath) => {
-    const after = safeRead(filePath);
+    const size = getFileSize(filePath);
+    const binary = isBinaryFile(filePath);
+    const after = binary ? null : safeRead(filePath);
     recordFileEvent(db, {
-      sessionId,
-      type: 'add',
-      filePath,
-      before: null,
-      after,
+      sessionId, type: 'add', filePath, before: null, after, fileSize: size, isBinary: binary,
     });
-    preSnapshots.set(filePath, after);
+    if (after !== null) preSnapshots.set(filePath, after);
+    logEvent('add', filePath);
   });
 
   watcher.on('change', (filePath) => {
+    const size = getFileSize(filePath);
+    const binary = isBinaryFile(filePath);
     const before = preSnapshots.get(filePath) ?? null;
-    const after = safeRead(filePath);
+    const after = binary ? null : safeRead(filePath);
     recordFileEvent(db, {
-      sessionId,
-      type: 'change',
-      filePath,
-      before,
-      after,
+      sessionId, type: 'change', filePath, before, after, fileSize: size, isBinary: binary,
     });
-    preSnapshots.set(filePath, after);
+    if (after !== null) preSnapshots.set(filePath, after);
+    logEvent('change', filePath);
   });
 
   watcher.on('unlink', (filePath) => {
     const before = preSnapshots.get(filePath) ?? null;
     recordFileEvent(db, {
-      sessionId,
-      type: 'delete',
-      filePath,
-      before,
-      after: null,
+      sessionId, type: 'delete', filePath, before, after: null, fileSize: 0, isBinary: false,
     });
     preSnapshots.delete(filePath);
+    logEvent('delete', filePath);
   });
 
   // ── Cleanup function ────────────────────────────────────────────
@@ -174,11 +196,28 @@ export async function runCommand(agent, options) {
 
     await watcher.close();
     endSession(db, sessionId, exitCode);
+
+    // Prune old sessions if configured
+    try {
+      const configPath = path.join(cwd, '.agentlog', 'config.json');
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (config.maxSessionHistory) {
+        const { pruneSessions } = await import('../db.js');
+        const pruned = pruneSessions(db, config.maxSessionHistory);
+        if (pruned > 0) {
+          console.log(chalk.dim(`   Pruned ${pruned} old session(s)`));
+        }
+      }
+    } catch {
+      // no config or invalid
+    }
+
     db.close();
 
-    const duration = formatDuration(Date.now() - Date.now()); // will be recalculated
+    const elapsed = Date.now() - sessionStart;
     console.log('');
-    console.log(chalk.green(`●  Session ${chalk.bold(sessionId)} ended (exit ${exitCode})`));
+    console.log(chalk.green(`  Session ${chalk.bold(sessionId)} ended`));
+    console.log(chalk.dim(`   Duration: ${formatDuration(elapsed)}  |  ${fileEventCount} file event(s)  |  Exit: ${exitCode}`));
     console.log('');
     console.log(chalk.dim('  Review:'));
     console.log(`  ${chalk.cyan(`agentlog diff ${sessionId}`)}`);
@@ -197,6 +236,7 @@ export async function runCommand(agent, options) {
     const args = options.args ? options.args.split(' ') : [];
     const fullCmd = [agentCmd, ...args].join(' ');
 
+    const { recordShellEvent } = await import('../db.js');
     recordShellEvent(db, { sessionId, command: fullCmd, cwd });
     console.log(chalk.dim(`   Spawning: ${fullCmd}`));
     console.log('');
@@ -209,7 +249,7 @@ export async function runCommand(agent, options) {
     });
 
     child.on('error', (err) => {
-      console.log(chalk.red(`✖  Failed to spawn "${agentCmd}": ${err.message}`));
+      console.log(chalk.red(`  Failed to spawn "${agentCmd}": ${err.message}`));
       cleanup(1);
     });
 

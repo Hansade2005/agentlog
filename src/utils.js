@@ -1,17 +1,18 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 
 /**
- * Generate an 8-character hex session ID.
+ * Generate a 12-character hex session ID (6 bytes = 281 trillion combinations).
  */
 export function generateSessionId() {
-  return crypto.randomBytes(4).toString('hex');
+  return crypto.randomBytes(6).toString('hex');
 }
 
 /**
  * Format a duration in ms to a human-readable string.
  */
 export function formatDuration(ms) {
-  if (ms == null) return 'ongoing';
+  if (ms == null || ms < 0) return 'ongoing';
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -19,7 +20,9 @@ export function formatDuration(ms) {
   if (minutes < 60) return `${minutes}m ${secs}s`;
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
-  return `${hours}h ${mins}m`;
+  if (hours < 24) return `${hours}h ${mins}m`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h`;
 }
 
 /**
@@ -94,9 +97,6 @@ export function agentLabel(agent) {
   return AGENT_LABELS[agent] || agent;
 }
 
-/**
- * Valid agent keys.
- */
 export const VALID_AGENTS = Object.keys(AGENT_LABELS);
 
 /**
@@ -114,20 +114,75 @@ export const AGENT_COMMANDS = {
 };
 
 /**
- * Default ignore patterns for chokidar.
+ * Max file size to snapshot (5 MB). Larger files are skipped.
  */
-export const DEFAULT_IGNORE = [
-  '**/node_modules/**',
-  '**/.git/**',
-  '**/.agentlog/**',
-  '**/dist/**',
-  '**/.next/**',
-  '**/build/**',
-  '**/__pycache__/**',
-  '**/*.pyc',
-  '**/.DS_Store',
-  '**/Thumbs.db',
-  '**/*.db',
-  '**/*.db-shm',
-  '**/*.db-wal',
-];
+export const MAX_SNAPSHOT_SIZE = 5 * 1024 * 1024;
+
+/**
+ * Detect if a file is likely binary by reading its first 8KB.
+ */
+export function isBinaryFile(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(8192);
+    const bytesRead = fs.readSync(fd, buf, 0, 8192, 0);
+    fs.closeSync(fd);
+    if (bytesRead === 0) return false;
+    // Check for null bytes (strong binary indicator)
+    for (let i = 0; i < bytesRead; i++) {
+      if (buf[i] === 0) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get file size in bytes. Returns -1 on error.
+ */
+export function getFileSize(filePath) {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return -1;
+  }
+}
+
+/**
+ * Format file size in human-readable units.
+ */
+export function formatSize(bytes) {
+  if (bytes < 0) return '?';
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
+}
+
+/**
+ * Strip ANSI escape codes from a string.
+ */
+export function stripAnsi(str) {
+  return str.replace(
+    // eslint-disable-next-line no-control-regex
+    /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g,
+    ''
+  );
+}
+
+/**
+ * Pad a string (accounting for ANSI codes) to a given width.
+ */
+export function pad(str, width) {
+  const visible = stripAnsi(str);
+  const padding = Math.max(0, width - visible.length);
+  return str + ' '.repeat(padding);
+}
+
+/**
+ * Format a number with commas: 1234567 → "1,234,567"
+ */
+export function formatNumber(n) {
+  return n.toLocaleString('en-US');
+}
