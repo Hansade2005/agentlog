@@ -18,16 +18,19 @@ class DatabaseWrapper {
   constructor(sqlDb, dbPath) {
     this._db = sqlDb;
     this._path = dbPath;
+    this._dirty = false;
+    this._saveTimer = null;
+    this._saveInterval = 500; // flush to disk at most every 500ms
   }
 
   run(sql, ...params) {
     this._db.run(sql, params.flat());
-    this._save();
+    this._scheduleSave();
   }
 
   exec(sql) {
     this._db.run(sql);
-    this._save();
+    this._scheduleSave();
   }
 
   get(sql, ...params) {
@@ -52,10 +55,36 @@ class DatabaseWrapper {
     return rows;
   }
 
+  _scheduleSave() {
+    this._dirty = true;
+    if (!this._saveTimer) {
+      this._saveTimer = setTimeout(() => {
+        this._saveTimer = null;
+        if (this._dirty) {
+          this._flush();
+        }
+      }, this._saveInterval);
+    }
+  }
+
+  _flush() {
+    try {
+      const data = this._db.export();
+      const buffer = Buffer.from(data);
+      fs.writeFileSync(this._path, buffer);
+      this._dirty = false;
+    } catch {
+      // disk write failed — will retry on next flush
+    }
+  }
+
+  /** Force immediate save (call before close or exit). */
   _save() {
-    const data = this._db.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync(this._path, buffer);
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    this._flush();
   }
 
   close() {

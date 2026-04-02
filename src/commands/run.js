@@ -6,10 +6,11 @@ import chokidar from 'chokidar';
 import ora from 'ora';
 import {
   openDb, createSession, endSession, recordFileEvent, getActiveSession,
+  recordShellEvent, pruneSessions,
 } from '../db.js';
 import {
   generateSessionId, agentLabel, VALID_AGENTS, AGENT_COMMANDS,
-  formatDuration, isBinaryFile, getFileSize, MAX_SNAPSHOT_SIZE, formatSize,
+  formatDuration, isBinaryFile, getFileSize, MAX_SNAPSHOT_SIZE,
 } from '../utils.js';
 
 /**
@@ -137,15 +138,20 @@ export async function runCommand(agent, options) {
   spinner.succeed(`Indexed ${preSnapshots.size} files`);
 
   // ── Phase 2: Main file watcher ──────────────────────────────────
+  // Use low stabilityThreshold so rapid agent writes are captured quickly.
+  // usePolling as fallback for network drives / containers where inotify fails.
   const watcher = chokidar.watch(cwd, {
     ignored: ignoreFn,
     ignoreInitial: true,
     persistent: true,
     followSymlinks: false,
     awaitWriteFinish: {
-      stabilityThreshold: 300,
-      pollInterval: 100,
+      stabilityThreshold: 100,
+      pollInterval: 50,
     },
+    // Atomic writes: some editors write to a tmp file then rename.
+    // This ensures we catch the rename as a change event.
+    atomic: 100,
   });
 
   function logEvent(type, filePath) {
@@ -189,6 +195,11 @@ export async function runCommand(agent, options) {
     logEvent('delete', filePath);
   });
 
+  // Catch watcher errors so events aren't silently dropped
+  watcher.on('error', (err) => {
+    console.log(chalk.red(`   Watcher error: ${err.message}`));
+  });
+
   // ── Cleanup function ────────────────────────────────────────────
   async function cleanup(exitCode) {
     if (cleaning) return;
@@ -202,7 +213,6 @@ export async function runCommand(agent, options) {
       const configPath = path.join(cwd, '.agentlog', 'config.json');
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       if (config.maxSessionHistory) {
-        const { pruneSessions } = await import('../db.js');
         const pruned = pruneSessions(db, config.maxSessionHistory);
         if (pruned > 0) {
           console.log(chalk.dim(`   Pruned ${pruned} old session(s)`));
@@ -230,13 +240,12 @@ export async function runCommand(agent, options) {
   process.on('SIGINT', () => cleanup(0));
   process.on('SIGTERM', () => cleanup(0));
 
-  // ── Phase 3: Spawn agent CLI (if applicable) ───────────────────
+  // ── Phase 3: Spawn agent CLI or watch mode ─────────────────────
   const agentCmd = AGENT_COMMANDS[agent];
   if (agentCmd) {
     const args = options.args ? options.args.split(' ') : [];
     const fullCmd = [agentCmd, ...args].join(' ');
 
-    const { recordShellEvent } = await import('../db.js');
     recordShellEvent(db, { sessionId, command: fullCmd, cwd });
     console.log(chalk.dim(`   Spawning: ${fullCmd}`));
     console.log('');
