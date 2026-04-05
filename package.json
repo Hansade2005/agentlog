@@ -1,6 +1,6 @@
 {
   "name": "@pipilot-dev/agentlog",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "Record, query, diff, and rollback AI coding agent sessions — locally, with SQLite.",
   "type": "module",
   "bin": {

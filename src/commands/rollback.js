@@ -37,6 +37,10 @@ export async function rollbackCommand(sessionId, options) {
   }
 
   // Build first-event-per-file map (pre-session state)
+  // If --files specified, only rollback those files
+  const fileFilter = options.files
+    ? new Set(options.files.map((f) => path.resolve(session.cwd, f)))
+    : null;
   const firstEventByFile = new Map();
   for (const evt of fileEvents) {
     if (!firstEventByFile.has(evt.file_path)) {
@@ -46,6 +50,7 @@ export async function rollbackCommand(sessionId, options) {
 
   const actions = [];
   for (const [filePath, evt] of firstEventByFile) {
+    if (fileFilter && !fileFilter.has(filePath)) continue;
     const rel = shortPath(filePath, session.cwd);
 
     if (evt.event_type === 'add') {
