@@ -21,6 +21,7 @@ import { exportCommand } from '../src/commands/export.js';
 import { statsCommand } from '../src/commands/stats.js';
 import { tagCommand } from '../src/commands/tag.js';
 import { cleanCommand } from '../src/commands/clean.js';
+import { uiCommand } from '../src/commands/ui.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -148,5 +149,13 @@ program
   .option('-k, --keep <n>', 'Keep the latest N sessions')
   .option('-y, --yes', 'Skip confirmation')
   .action(cleanCommand);
+
+program
+  .command('ui')
+  .alias('dashboard')
+  .description('Open web dashboard on a local port')
+  .option('-p, --port <port>', 'Port number', '4242')
+  .option('--no-browser', 'Do not auto-open browser')
+  .action(uiCommand);
 
 program.parse();
